@@ -45,6 +45,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeoutError
@@ -1199,29 +1200,33 @@ class ArbBot:
         """
         Fetch all order books and evaluate opportunities.
 
-        Each (exchange, symbol) pair is fetched in its own thread so a single
-        slow or hung API call cannot block the entire scan.  A per-scan timeout
-        of 30 s (or 5 s × number of pairs, whichever is larger) is enforced;
-        any futures that haven't resolved by then are skipped.
+        Uses a semaphore-bounded thread pool: up to CONCURRENCY threads per
+        exchange run simultaneously, keeping well under rate limits while
+        completing the scan fast enough that order books are still fresh.
         """
+        CONCURRENCY = 5          # concurrent requests per exchange
         depth = self._cfg.order_book_depth
         size  = self._risk.position_size(self._port.state)
 
         books_cb: dict = {}
         books_kr: dict = {}
 
-        def fetch_one(client: ExchangeClient, sym: str):
-            ob = client.fetch_order_book(sym, depth)
+        def fetch_one(client: ExchangeClient, sym: str, sem: threading.Semaphore):
+            with sem:
+                ob = client.fetch_order_book(sym, depth)
             return client.name, sym, ob
 
-        scan_timeout = max(30.0, len(self._pairs) * 5.0)
-        futures = {}
-        with ThreadPoolExecutor(max_workers=len(self._pairs) * 2 or 2) as pool:
+        scan_timeout = max(60.0, len(self._pairs) * 2.0)
+        sem_cb = threading.Semaphore(CONCURRENCY)
+        sem_kr = threading.Semaphore(CONCURRENCY)
+        futures: dict = {}
+
+        with ThreadPoolExecutor(max_workers=CONCURRENCY * 2) as pool:
             for sym in self._pairs:
                 if not self._running:
                     break
-                futures[pool.submit(fetch_one, self._cb, sym)] = ("coinbase", sym)
-                futures[pool.submit(fetch_one, self._kr, sym)] = ("kraken",   sym)
+                futures[pool.submit(fetch_one, self._cb, sym, sem_cb)] = ("coinbase", sym)
+                futures[pool.submit(fetch_one, self._kr, sym, sem_kr)] = ("kraken",   sym)
 
             try:
                 for fut in as_completed(futures, timeout=scan_timeout):
@@ -1229,16 +1234,13 @@ class ArbBot:
                     try:
                         _, _, ob = fut.result()
                         if ob:
-                            if ex_name == "coinbase":
-                                books_cb[sym] = ob
-                            else:
-                                books_kr[sym] = ob
+                            (books_cb if ex_name == "coinbase" else books_kr)[sym] = ob
                     except Exception as e:
                         self._log.warning("[%s] Order book error %s: %s", ex_name, sym, e)
             except FutureTimeoutError:
                 pending = [v for f, v in futures.items() if not f.done()]
                 self._log.warning(
-                    "Scan timed out after %.0fs — %d fetch(es) still pending: %s",
+                    "Scan timed out after %.0fs — %d pending: %s",
                     scan_timeout, len(pending),
                     ", ".join(f"{ex}/{s}" for ex, s in pending),
                 )
