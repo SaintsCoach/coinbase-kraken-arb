@@ -1,0 +1,66 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Coinbase ↔ Kraken Arbitrage Bot — Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Exchange API Credentials ──────────────────────────────────────────────────
+# Coinbase Advanced Trade: https://www.coinbase.com/settings/api
+# Required scopes (live only): trade, view
+coinbase:
+  api_key:    "YOUR_COINBASE_API_KEY"
+  api_secret: "YOUR_COINBASE_API_SECRET"
+
+# Kraken: https://www.kraken.com/u/security/api
+# Required permissions: Query Funds, Create & Modify Orders, Cancel/Close Orders
+kraken:
+  api_key:    "YOUR_KRAKEN_API_KEY"
+  api_secret: "YOUR_KRAKEN_API_SECRET"
+
+# ── Execution Mode ────────────────────────────────────────────────────────────
+# false  → Paper trading (default, no real funds)
+# true   → LIVE TRADING — only enable with valid credentials and after testing!
+live_mode: false
+
+# ── Strategy ──────────────────────────────────────────────────────────────────
+strategy:
+  scan_interval_seconds: 7      # Seconds between full order-book scans
+  min_profit_pct: 0.5           # Minimum net profit % to act on (after fees + slippage)
+  max_position_usdc: 500.0      # Hard cap per trade in USDC
+  max_position_pct: 0.02        # Also cap at 2% of current cash balance
+  min_24h_volume_usdc: 100000   # Both exchanges must exceed this 24h quote volume
+  order_book_depth: 10          # Order-book levels to fetch (used for VWAP / slippage)
+  triangular: false             # Enable same-exchange triangular arb (experimental)
+
+# ── Exchange Fees ─────────────────────────────────────────────────────────────
+# Adjust to match your personal fee tier (check your exchange account page).
+fees:
+  coinbase:
+    maker: 0.004    # 0.40% — Advanced Trade default tier
+    taker: 0.006    # 0.60%
+  kraken:
+    maker: 0.0016   # 0.16%
+    taker: 0.0026   # 0.26%
+
+# ── Risk Management ───────────────────────────────────────────────────────────
+risk:
+  max_daily_drawdown_pct: 5.0   # Stop trading if daily loss exceeds this %
+  max_daily_trades: 50          # Hard limit on trades per calendar day
+  max_volatility_pct: 3.0       # Skip pair if 24h (high-low)/low > this %
+  min_order_book_age_s: 5.0     # Reject order books older than N seconds
+
+# ── Paper Trading ─────────────────────────────────────────────────────────────
+paper:
+  starting_balance_usdc: 10000.0
+
+# ── Alerts (optional) ─────────────────────────────────────────────────────────
+# Set up a Telegram bot via @BotFather, get your chat ID via @userinfobot.
+alerts:
+  telegram:
+    enabled:   false
+    bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+    chat_id:   "YOUR_CHAT_ID"
+  min_profit_to_alert_pct: 1.0   # Only alert when net profit exceeds this %
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  level:    "INFO"          # DEBUG for verbose per-scan output
+  log_file: "arb_bot.log"
