@@ -45,7 +45,7 @@ risk:
   max_daily_drawdown_pct: 5.0   # Stop trading if daily loss exceeds this %
   max_daily_trades: 50          # Hard limit on trades per calendar day
   max_volatility_pct: 3.0       # Skip pair if 24h (high-low)/low > this %
-  min_order_book_age_s: 30.0    # Reject order books older than N seconds
+  min_order_book_age_s: 60.0    # Reject order books older than N seconds
 
 # ── Paper Trading ─────────────────────────────────────────────────────────────
 paper:

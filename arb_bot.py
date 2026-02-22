@@ -660,8 +660,10 @@ class ArbCalculator:
         total_slip_pct = buy_slip + sell_slip
 
         # ── Fees ──────────────────────────────────────────────────────────────
-        # Both legs pay taker fees (we need immediate execution)
-        fee_pct = (self._cfg.fee(buy_ex, "taker") + self._cfg.fee(sell_ex, "taker")) * 100
+        # Buy leg: taker (market order — immediate fill guaranteed).
+        # Sell leg: maker (post-only limit order at/below best bid — earns
+        #   lower maker fee; realistic for the faster-to-move sell side).
+        fee_pct = (self._cfg.fee(buy_ex, "taker") + self._cfg.fee(sell_ex, "maker")) * 100
 
         # ── Net profit ────────────────────────────────────────────────────────
         net_profit_pct    = raw_spread_pct - fee_pct - total_slip_pct
