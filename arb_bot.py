@@ -47,7 +47,7 @@ import signal
 import sys
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
@@ -295,12 +295,17 @@ class ExchangeClient:
                 f"Run: python -c \"import ccxt; print(ccxt.exchanges)\""
             )
 
-        # Kraken's CCXT default rateLimit is 3000ms (very conservative).
-        # Public endpoints allow ~1 req/s; override to 1000ms.
-        # Also disable CCXT's built-in retry-on-error to fail fast on 502s.
+        # Cap per-request timeouts and rate limits for both exchanges so that
+        # a single hung API call doesn't block the scan thread for 10+ seconds.
+        self._ex.timeout = 8_000   # 8 s per request max
+
         if name == "kraken":
+            # Kraken's CCXT default rateLimit is 3000 ms (very conservative).
+            # Public endpoints allow ~1 req/s; 1000 ms is safe.
             self._ex.rateLimit = 1000
-            self._ex.timeout   = 8_000   # 8 s per request max
+        elif name == "coinbase":
+            # Coinbase Advanced Trade allows ~30 req/s public; 200 ms is safe.
+            self._ex.rateLimit = 200
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -1194,8 +1199,10 @@ class ArbBot:
         """
         Fetch all order books and evaluate opportunities.
 
-        Both exchanges are polled concurrently (one thread each) so their
-        individual rate limits run in parallel, roughly halving scan time.
+        Each (exchange, symbol) pair is fetched in its own thread so a single
+        slow or hung API call cannot block the entire scan.  A per-scan timeout
+        of 30 s (or 5 s × number of pairs, whichever is larger) is enforced;
+        any futures that haven't resolved by then are skipped.
         """
         depth = self._cfg.order_book_depth
         size  = self._risk.position_size(self._port.state)
@@ -1203,22 +1210,44 @@ class ArbBot:
         books_cb: dict = {}
         books_kr: dict = {}
 
-        # Fetch all order books from both exchanges simultaneously
-        def fetch_all(client: ExchangeClient) -> dict:
-            result = {}
+        def fetch_one(client: ExchangeClient, sym: str):
+            ob = client.fetch_order_book(sym, depth)
+            return client.name, sym, ob
+
+        scan_timeout = max(30.0, len(self._pairs) * 5.0)
+        futures = {}
+        with ThreadPoolExecutor(max_workers=len(self._pairs) * 2 or 2) as pool:
             for sym in self._pairs:
                 if not self._running:
                     break
-                ob = client.fetch_order_book(sym, depth)
-                if ob:
-                    result[sym] = ob
-            return result
+                futures[pool.submit(fetch_one, self._cb, sym)] = ("coinbase", sym)
+                futures[pool.submit(fetch_one, self._kr, sym)] = ("kraken",   sym)
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_cb = pool.submit(fetch_all, self._cb)
-            fut_kr = pool.submit(fetch_all, self._kr)
-            books_cb = fut_cb.result()
-            books_kr = fut_kr.result()
+            try:
+                for fut in as_completed(futures, timeout=scan_timeout):
+                    ex_name, sym = futures[fut]
+                    try:
+                        _, _, ob = fut.result()
+                        if ob:
+                            if ex_name == "coinbase":
+                                books_cb[sym] = ob
+                            else:
+                                books_kr[sym] = ob
+                    except Exception as e:
+                        self._log.warning("[%s] Order book error %s: %s", ex_name, sym, e)
+            except FutureTimeoutError:
+                pending = [v for f, v in futures.items() if not f.done()]
+                self._log.warning(
+                    "Scan timed out after %.0fs — %d fetch(es) still pending: %s",
+                    scan_timeout, len(pending),
+                    ", ".join(f"{ex}/{s}" for ex, s in pending),
+                )
+
+        self._log.info(
+            "Order books: CB=%d/%d  KR=%d/%d",
+            len(books_cb), len(self._pairs),
+            len(books_kr), len(self._pairs),
+        )
 
         # Evaluate opportunities for symbols with books from both exchanges
         for symbol in self._pairs:
