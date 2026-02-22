@@ -1,0 +1,5 @@
+arb_bot.log
+portfolio_state.json
+__pycache__/
+*.pyc
+.env
